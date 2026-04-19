@@ -8,7 +8,7 @@ import os
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 warnings.filterwarnings("ignore", message=".*embeddings.position_ids.*")
 
-from core.config import Config
+from backend.core.config import Config
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -32,6 +32,13 @@ import json
 
 class RAGService:
     def __init__(self):
+        self.doc_chunks = {}         # doc_id -> [chunks]
+        self.doc_embeddings = {}     # doc_id -> embeddings matrix
+        self.doc_indexes = {}        # doc_id -> FAISS index
+        self.doc_embedding_cache = {} # doc_id -> {text: embedding}
+        self.storage_path = os.path.join(os.path.dirname(__file__), '..', 'storage')
+        if not os.path.exists(self.storage_path):
+            os.makedirs(self.storage_path)
         self.storage_path = os.path.join(os.path.dirname(__file__), '..', 'storage')
         if not os.path.exists(self.storage_path):
             os.makedirs(self.storage_path)
@@ -61,6 +68,8 @@ class RAGService:
         """
         Load the chunks, embeddings, and FAISS index for a doc_id from disk into memory
         """
+        if not hasattr(self, 'doc_embedding_cache'):
+            self.doc_embedding_cache = {}
         doc_dir = os.path.join(self.storage_path, doc_id)
         chunks_fp = os.path.join(doc_dir, "chunks.json")
         emb_fp = os.path.join(doc_dir, "embeddings.npy")
@@ -78,11 +87,6 @@ class RAGService:
 
         # Load FAISS index
         self.doc_indexes[doc_id] = faiss.read_index(index_fp)
-
-        self.doc_chunks = {}         # doc_id -> [chunks]
-        self.doc_embeddings = {}     # doc_id -> embeddings matrix
-        self.doc_indexes = {}        # doc_id -> FAISS index
-        self.doc_embedding_cache = {} # doc_id -> {text: embedding}
 
     def chunk_text(self, text: str) -> list:
         chunks = re.split(r'\n{2,}|(?<=[.!?])\s+(?=[A-Z])', text)

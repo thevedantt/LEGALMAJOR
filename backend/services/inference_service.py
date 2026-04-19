@@ -1,18 +1,15 @@
 import json
-from interfaces.llm_client import LLMClient
-from services.rag_service import RAGService
-from core.config import Config
+import re
+from backend.interfaces.llm_client import LLMClient
+from backend.services.rag_service import RAGService
+from backend.core.config import Config
 
 class InferenceService:
     def __init__(self):
         self.llm = LLMClient()
         self.rag = RAGService()
 
-    def ask_question(self, question, document):
-        if not self.rag.chunks or self.rag.chunks != self.rag.chunk_cache.get("chunks"):
-            chunks = self.rag.chunk_text(document)
-            self.rag.build_index(chunks)
-        context = self.rag.get_compact_context(question)
+    def ask_question(self, question, context):
         prompt = f"Answer using context. Be concise. If not found, say so.\nContext:\n{context}\n\nQuestion: {question}\nAnswer:"
         answer = self.llm.generate(prompt)
         return {"answer": answer.strip()}
@@ -30,8 +27,7 @@ class InferenceService:
         except Exception:
             return {"type": "", "risk": "", "reason": result.strip()}
 
-    def analyze_risk(self, doc_id: str):
-        context = self.rag.get_risk_context(doc_id, top_k=5, max_words=300)
+    def analyze_risk(self, context: str):
         prompt = (
             "Analyze the contract and identify risks.\n\n"
             "Return:\n"
@@ -71,6 +67,125 @@ class InferenceService:
             overall = ""
             points = [result.strip()]
         return {"overall_risk": overall, "points": points}
+
+    def analyze_fairness(self, context: str):
+        prompt = (
+            "Assess fairness in the contract. Return JSON only with keys: "
+            "favors (Company|Customer|Balanced), fairness_score (0-1), reason (short).\n"
+            "CONTEXT:\n" + context
+        )
+        result = self.llm.generate(prompt)
+        try:
+            fixed = result.replace("'", '"')
+            output = json.loads(fixed)
+            return {
+                "favors": output.get("favors", "Balanced"),
+                "fairness_score": float(output.get("fairness_score", 0.5)),
+                "reason": output.get("reason", "")
+            }
+        except Exception:
+            # Fallback parsing
+            favors = "Balanced"
+            if "company" in result.lower():
+                favors = "Company"
+            elif "customer" in result.lower() or "client" in result.lower():
+                favors = "Customer"
+            score_match = re.search(r"(0\.\d+|1\.0|1)", result)
+            score = float(score_match.group(1)) if score_match else 0.5
+            return {"favors": favors, "fairness_score": score, "reason": result.strip()}
+
+    def check_conflicts(self, context: str):
+        prompt = (
+            "Identify conflicting or contradictory clauses. Return JSON only: "
+            "{\"conflicts\":[{\"clauses\":[\"Clause A\",\"Clause B\"],\"reason\":\"...\"}]}\n"
+            "CONTEXT:\n" + context
+        )
+        result = self.llm.generate(prompt)
+        try:
+            fixed = result.replace("'", '"')
+            output = json.loads(fixed)
+            conflicts = output.get("conflicts", []) if isinstance(output, dict) else output
+            return {"conflicts": conflicts}
+        except Exception:
+            return {"conflicts": []}
+
+    def extract_clauses(self, text: str):
+        prompt = (
+            "Extract key clauses from the contract. Return a JSON array only, each with: "
+            "type, risk (High|Medium|Low), text, section.\n"
+            "CONTEXT:\n" + text
+        )
+        result = self.llm.generate(prompt)
+        try:
+            fixed = result.replace("'", '"')
+            output = json.loads(fixed)
+            if isinstance(output, dict) and "clauses" in output:
+                output = output["clauses"]
+            return output if isinstance(output, list) else []
+        except Exception:
+            # Fallback: simple heuristic from chunks
+            clauses = []
+            for chunk in text.split("\n\n"):
+                if len(clauses) >= 6:
+                    break
+                lowered = chunk.lower()
+                if not lowered.strip():
+                    continue
+                ctype = "General"
+                risk = "Low"
+                if any(k in lowered for k in ["liability", "indemnity"]):
+                    ctype = "Liability"
+                    risk = "High"
+                elif any(k in lowered for k in ["termination", "breach"]):
+                    ctype = "Termination"
+                    risk = "Medium"
+                elif any(k in lowered for k in ["payment", "fees"]):
+                    ctype = "Payment"
+                    risk = "Medium"
+                section_match = re.search(r"\b\d+(?:\.\d+)+\b", chunk)
+                section = section_match.group(0) if section_match else ""
+                clauses.append({
+                    "type": ctype,
+                    "risk": risk,
+                    "text": chunk.strip(),
+                    "section": section
+                })
+            return clauses
+
+    def explain_term(self, term: str):
+        prompt = (
+            "Explain the legal term in simple language. Return JSON only with keys: "
+            "definition, example. Term: " + term
+        )
+        result = self.llm.generate(prompt)
+        try:
+            fixed = result.replace("'", '"')
+            output = json.loads(fixed)
+            return {
+                "definition": output.get("definition", ""),
+                "example": output.get("example", "")
+            }
+        except Exception:
+            return {"definition": result.strip(), "example": ""}
+
+    def suggest_improvements(self, context: str):
+        prompt = (
+            "Suggest safer clause improvements. Return JSON only with keys: "
+            "suggestions (array of short bullet strings).\nCONTEXT:\n" + context
+        )
+        result = self.llm.generate(prompt)
+        try:
+            fixed = result.replace("'", '"')
+            output = json.loads(fixed)
+            if isinstance(output, dict) and "suggestions" in output:
+                return {"suggestions": output["suggestions"]}
+            if isinstance(output, list):
+                return {"suggestions": output}
+        except Exception:
+            pass
+        # Fallback: split lines
+        suggestions = [s.strip("- ").strip() for s in result.splitlines() if s.strip()]
+        return {"suggestions": suggestions}
 
     def summarize(self, text):
         chunks = self.rag.chunk_text(text)

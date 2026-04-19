@@ -1,5 +1,5 @@
 import requests
-from core.config import Config
+from backend.core.config import Config
 
 class LLMClient:
     def __init__(self, base_url=None, model_name=None):

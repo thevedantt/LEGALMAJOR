@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api import routes
+try:
+    from backend.api import routes
+except ModuleNotFoundError:
+    from api import routes
 
 app = FastAPI()
 
