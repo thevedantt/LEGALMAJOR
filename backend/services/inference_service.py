@@ -30,6 +30,48 @@ class InferenceService:
         except Exception:
             return {"type": "", "risk": "", "reason": result.strip()}
 
+    def analyze_risk(self, doc_id: str):
+        context = self.rag.get_risk_context(doc_id, top_k=5, max_words=300)
+        prompt = (
+            "Analyze the contract and identify risks.\n\n"
+            "Return:\n"
+            "Overall Risk: <Low | Medium | High>\n"
+            "\nKey Risks:\n"
+            "- Point 1 (short explanation)\n"
+            "- Point 2\n"
+            "- Point 3\n"
+            "\nKeep response concise.\n"
+            "\nCONTEXT:\n" + context
+        )
+        result = self.llm.generate(prompt)
+        # Parse LLM output
+        overall = ""
+        points = []
+        try:
+            lines = result.strip().splitlines()
+            for line in lines:
+                if line.lower().startswith("overall risk:"):
+                    overall = line.split(":",1)[-1].strip().capitalize()
+                elif line.lstrip().startswith("-"):
+                    points.append(line.lstrip("- ").strip())
+            if not overall:
+                # fallback: try match in plain text
+                for word in ("High", "Medium", "Low"):
+                    if word.lower() in result.lower():
+                        overall = word
+                        break
+            if not points:
+                # fallback: just use all content after 'Key Risks:' split
+                if "Key Risks:" in result:
+                    after = result.split("Key Risks:",1)[-1]
+                    points = [pt.strip().lstrip("- ") for pt in after.split("\n") if pt.strip()]
+            if not points:
+                points = [result.strip()]
+        except Exception:
+            overall = ""
+            points = [result.strip()]
+        return {"overall_risk": overall, "points": points}
+
     def summarize(self, text):
         chunks = self.rag.chunk_text(text)
         summaries = []
